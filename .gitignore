@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.env
+*.log
+*.db
+*.sqlite3
+.env
+venv/
+*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PyCharm
+.idea/
+
+# Telegram bot downloads
+*.jpg
+*.png
+*.jpeg
+
+# Temporary
+*.tmp
+*.bak
+
+# Compiled
+*.so
+*.dll
+*.exe
+
+# Mindee configs or temp
+mindee_config.json
+
+# Token secrets
+.env
+.settings/
+
+# pip cache
+pip-wheel-metadata/
