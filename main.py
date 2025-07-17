@@ -16,15 +16,21 @@ from telegram.ext import (
 
 from mindee import ClientV2, InferencePredictOptions
 from mindee.parsing.v2 import InferenceResponse
+from openai import OpenAI
 
 # Load tokens
 TG_TOKEN = config("TELEGRAM_TOKEN")
 MINDEE_API_KEY = config("MINDEE_API_KEY")
 VEHICLE_MODEL_ID = config("VEHICLE_MODEL_ID")
 PASSPORT_MODEL_ID = config("PASSPORT_MODEL_ID")
+AI_TOKEN = config("OPEN_ROUTER_API")
 
-# Initialize Mindee client
+# Initialize clients
 mindee_client = ClientV2(MINDEE_API_KEY)
+ai_client = OpenAI(
+  base_url="https://openrouter.ai/api/v1",
+  api_key=f"{AI_TOKEN}",
+)
 
 # State definitions
 ASK_PASSPORT, ASK_CAR_DOC, CONFIRM_DATA, PRICE_CONFIRM, PRICE_RECONFIRM, AFTER_POLICY = range(6)
@@ -47,6 +53,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return ASK_PASSPORT
+
+
+# Additional AI interactions
+async def answer_user_question_with_ai(user_question: str) -> str:
+    try:
+        system_message = (
+            "Ти — ввічливий Telegram-бот (Але не надо, тобто без використання емодзі), що допомагає людям купити автострахування. "
+            "Твоє завдання — пояснити, чому потрібно надіслати фото і чому треба саме фото паспорту та/або документа на авто, відповісти простою українською, "
+            "і ввічливо нагадати, що користувач повинен зробити далі."
+        )
+        user_prompt = (
+            f"Користувач запитав: \"{user_question}\"\n"
+            f"Як би ти відповів, якщо зараз бот очікує, наприклад, фото паспорта або авто (без привітань)?"
+        )
+
+        response = ai_client.chat.completions.create(
+            model="deepseek/deepseek-r1:free",
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        print("AI error:", e)
+        return "Вибачте, щось пішло не так з відповіддю. Спробуйте ще раз."
+
+
+# Additional AI interactions
+async def ask_ai_about_price():
+    try:
+        response = ai_client.chat.completions.create(
+            model="deepseek/deepseek-r1:free",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Ти ввічливий страховий бот, але не використовуй емодзі. Поясни, чому ціна фіксована — дуже коротко та не дозволяй тогруватися (щось накшталт в компанії поки що немає інших варіантів), українською мовою.",
+                },
+                {
+                    "role": "user",
+                    "content": "Чому ціна на автострахування фіксована?",
+                }
+            ],
+        )
+        return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        print("AI error:", e)
+        return "Ціна, на жаль, фіксована через стандартизований тариф для всіх клієнтів."
 
 
 # Downloading photo
@@ -185,7 +241,19 @@ async def confirm_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Price confirmation logic
 async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.lower() == "так":
+    user_text = update.message.text.lower()
+
+    if "чому" in user_text or "можна" in user_text or "дешев" in user_text:
+        explanation = await ask_ai_about_price()
+        await update.message.reply_text(explanation)
+        reply_keyboard = [["Так", "Ні"]]
+        await update.message.reply_text(
+            "Тепер ви згодні на оформлення страхування за 100 USD?",
+            reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
+        )
+        return PRICE_CONFIRM
+
+    if user_text == "так":
         return await issue_policy(update, context)
     else:
         reply_keyboard = [["Так", "Ні"]]
@@ -198,11 +266,46 @@ async def handle_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Continuation of confirmation logic
 async def handle_reconfirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.lower() == "так":
+    user_input = update.message.text.lower().strip()
+
+    if user_input in ["так", "згоден", "добре", "ок"]:
         return await issue_policy(update, context)
-    else:
+
+    elif user_input in ["ні", "не згоден", "ніт"]:
         await update.message.reply_text("Добре. Сподіваюся побачити вас наступного разу!")
         return ConversationHandler.END
+
+    else:
+        try:
+            prompt = (
+                f"Клієнт питає: '{user_input}'. "
+                "Поясни коротко українською, чому ціна на автострахування фіксована — 100 USD. "
+                "Скажи, що це базовий поліс і він охоплює стандартні ризики. "
+                "Не змінюй ціну, але відповідай доброзичливо."
+            )
+
+            ai_response = ai_client.chat.completions.create(
+                model="deepseek/deepseek-r1:free",
+                messages=[
+                    {"role": "system", "content": "Ти — ввічливий консультант страхового сервісу. Відповідай українською."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+
+            answer = ai_response.choices[0].message.content.strip()
+            await update.message.reply_text(answer)
+
+            reply_keyboard = [["Так", "Ні"]]
+            await update.message.reply_text(
+                "Після пояснення, ви погоджуєтесь на поліс за 100 USD?",
+                reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
+            )
+            return PRICE_RECONFIRM
+
+        except Exception as e:
+            logging.error(f"AI error in reconfirm: {e}")
+            await update.message.reply_text("На жаль, зараз не можу відповісти. Спробуйте трохи пізніше.")
+            return PRICE_RECONFIRM
 
 
 # Sending the result
@@ -257,9 +360,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# Wrong user input
+# Unscripted user input
 async def handle_unexpected_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Я очікую фото. Будь ласка, надішліть фото, як було запрошено.")
+    user_message = update.message.text.lower()
+    if any(word in user_message for word in ["навіщо", "чому", "для чого", "а якщо", "чи потрібно"]):
+        ai_reply = await answer_user_question_with_ai(update.message.text)
+        await update.message.reply_text(ai_reply)
+    else:
+        await update.message.reply_text("Я очікую фото. Будь ласка, надішліть фото, як було запрошено.")
+
 
 
 # In case of errors
