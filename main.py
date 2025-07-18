@@ -370,7 +370,6 @@ async def handle_unexpected_input(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("Я очікую фото. Будь ласка, надішліть фото, як було запрошено.")
 
 
-
 # In case of errors
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.error("Unhandled exception: %s", traceback.format_exc())
